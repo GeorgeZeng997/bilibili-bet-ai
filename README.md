@@ -143,8 +143,8 @@ python -X utf8 cli.py login --cookie "SESSDATA=xxx; bili_jct=yyy; DedeUserID=zzz
 python -X utf8 cli.py bet --source plaza --id 197 --opt 2 --coins 20 \
   --title "Fed Dec Rate Hike?" --opt-desc "No" --prob 0.95 --reason "Crowd confused hike with cut"
 
-# Place a bet on Esports Match Center
-python -X utf8 cli.py bet --source esports --id 37754 --qid 11858 --detail-id 24320 --coins 30
+# Place a bet on Esports Match Center (Note: Bilibili caps traditional esports bets at 10 coins per match)
+python -X utf8 cli.py bet --source esports --id 37754 --qid 11858 --detail-id 24320 --coins 10
 
 # Check current coin balance, official 6-month overview, and local SQLite ledger history
 python -X utf8 cli.py status
