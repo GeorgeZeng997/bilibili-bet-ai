@@ -1,0 +1,29 @@
+# 账号敏感凭证与本地数据库（严禁提交到Git！）
+data/
+*.db
+*.sqlite
+*.sqlite3
+cookies.json
+data_qr.json
+
+# 临时登录二维码文件
+login_qr.png
+login_qr.html
+
+# 个人临时批量执行脚本
+execute_batch.py
+
+# Python 缓存与虚拟环境
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+venv/
+env/
+.env
+
+# IDE 配置
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
