@@ -13,6 +13,9 @@ from quant import (
     parse_pool_coins,
 )
 
+# Bilibili's traditional Esports Match Center caps each question at 10 coins (code=75204 if exceeded).
+ESPORTS_MAX_COINS_PER_QUESTION = 10
+
 CATEGORY_MAP = {
     "all": (0, "全部"),
     "game": (1, "游戏"),
@@ -268,6 +271,12 @@ def cmd_bet(args: argparse.Namespace) -> None:
         if not args.qid or not args.detail_id:
             print("错误: esports 下注需要提供 --id (contest_id), --qid (question_id), --detail-id (detail_id)")
             sys.exit(1)
+        if args.coins > ESPORTS_MAX_COINS_PER_QUESTION:
+            print(
+                f"错误: 赛事中心 (/x/esports/guess/add) 每题最多投 {ESPORTS_MAX_COINS_PER_QUESTION} 枚硬币，"
+                f"当前 --coins={args.coins}（超出会返回 code=75204: 竞猜超出上限）。"
+            )
+            sys.exit(1)
         print(f"正在向【赛事中心 cid={args.id} qid={args.qid}】选项 detail_id={args.detail_id} 投入 {args.coins} 枚硬币...")
         res = client.place_esports_bet(
             contest_id=args.id,
@@ -334,7 +343,7 @@ def main() -> None:
     p_bet.add_argument("--opt", type=int, default=1, help="plaza选项序号 opt_idx (如 1, 2)")
     p_bet.add_argument("--qid", type=int, default=0, help="esports专用: question_id")
     p_bet.add_argument("--detail-id", type=int, default=0, help="esports专用: detail_id")
-    p_bet.add_argument("--coins", type=int, required=True, help="下注硬币数量")
+    p_bet.add_argument("--coins", type=int, required=True, help="下注硬币数量 (esports 每题上限 10)")
     p_bet.add_argument("--title", type=str, default="", help="盘口标题")
     p_bet.add_argument("--opt-desc", type=str, default="", help="选项名称")
     p_bet.add_argument("--prob", type=float, default=0.0, help="AI评估胜率")
