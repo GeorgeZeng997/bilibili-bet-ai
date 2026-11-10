@@ -86,3 +86,43 @@ class BetLedger:
                 "SELECT * FROM bets ORDER BY created_at DESC LIMIT ?", (limit,)
             ).fetchall()
             return [dict(r) for r in rows]
+
+    def update_settlement(
+        self,
+        predict_id: int,
+        status: str,
+        actual_gain: float,
+        source: Optional[str] = None,
+    ) -> int:
+        with sqlite3.connect(self.db_path) as conn:
+            if source:
+                cur = conn.execute(
+                    "UPDATE bets SET status = ?, actual_gain = ? WHERE predict_id = ? AND source = ?",
+                    (status, actual_gain, predict_id, source),
+                )
+            else:
+                cur = conn.execute(
+                    "UPDATE bets SET status = ?, actual_gain = ? WHERE predict_id = ?",
+                    (status, actual_gain, predict_id),
+                )
+            conn.commit()
+            return int(cur.rowcount or 0)
+
+    def get_summary(self) -> Dict[str, Any]:
+        with sqlite3.connect(self.db_path) as conn:
+            conn.row_factory = sqlite3.Row
+            rows = conn.execute("SELECT status, coins, actual_gain FROM bets").fetchall()
+        won = sum(1 for r in rows if r["status"] == "WON")
+        lost = sum(1 for r in rows if r["status"] == "LOST")
+        pending = sum(1 for r in rows if r["status"] == "PENDING")
+        pending_coins = sum(int(r["coins"] or 0) for r in rows if r["status"] == "PENDING")
+        realized_pnl = sum(float(r["actual_gain"] or 0.0) for r in rows if r["status"] in ("WON", "LOST"))
+        return {
+            "total_bets": len(rows),
+            "won": won,
+            "lost": lost,
+            "pending": pending,
+            "pending_coins": pending_coins,
+            "realized_pnl": round(realized_pnl, 2),
+        }
+

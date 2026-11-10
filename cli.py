@@ -2,7 +2,7 @@ import argparse
 import json
 import sys
 import time
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 from auth import interactive_qr_login, parse_cookie_string
 from bili_client import BiliClient
@@ -10,6 +10,7 @@ from ledger import BetLedger
 from quant import (
     evaluate_prediction_options,
     fractional_kelly_fixed_odds,
+    parse_hours_to_close,
     parse_pool_coins,
 )
 
@@ -45,12 +46,38 @@ def cmd_login(args: argparse.Namespace) -> None:
     interactive_qr_login(client)
 
 
+def sync_plaza_settlements(client: BiliClient, ledger: BetLedger, pages: int = 2) -> int:
+    """Syncs settled Prediction Plaza records (`show_status == 3`) into local SQLite ledger."""
+    updated = 0
+    seen_ids = set()
+    for page in range(1, pages + 1):
+        res = client.get_plaza_mine_records(page=page, page_size=20)
+        if res.get("code") != 0:
+            break
+        rec_list = (res.get("data") or {}).get("list") or []
+        if not rec_list:
+            break
+        for r in rec_list:
+            pid = int(r.get("predict_id") or 0)
+            if not pid or pid in seen_ids:
+                continue
+            seen_ids.add(pid)
+            if int(r.get("show_status") or 0) == 3:
+                try:
+                    gain = float(r.get("total_profit") or 0.0)
+                except (ValueError, TypeError):
+                    gain = 0.0
+                status = "WON" if gain >= 0.0 else "LOST"
+                updated += ledger.update_settlement(pid, status, gain, source="plaza")
+    return updated
+
+
 def cmd_status(args: argparse.Namespace) -> None:
     client = BiliClient()
     ledger = BetLedger()
-    print("=" * 70)
+    print("=" * 75)
     print("B站预测投顾系统 - 账户与账本状态")
-    print("=" * 70)
+    print("=" * 75)
     if client.is_logged_in:
         nav = client.get_nav_info()
         data = nav.get("data") or {}
@@ -62,24 +89,49 @@ def cmd_status(args: argparse.Namespace) -> None:
                 ov = client.get_plaza_mine_overview()
                 if ov.get("code") == 0 and ov.get("data"):
                     od = ov["data"]
-                    print(f"预测广场概览: {json.dumps(od, ensure_ascii=False)}")
+                    print(
+                        f"官方预测广场概览: 可用余额 {od.get('balance')} 币 | "
+                        f"近半年净利 {od.get('half_year_profit')} 币 | 官方胜率 {od.get('accuracy')}%"
+                    )
             except Exception:
                 pass
+
+            if not args.no_sync:
+                try:
+                    sync_plaza_settlements(client, ledger)
+                except Exception:
+                    pass
         else:
             print("登录状态: 本地 Cookie 已失效，请重新运行 `python cli.py login`")
     else:
         print("登录状态: 未登录（可免登录扫描盘口与试算赔率；下注前需运行 `python cli.py login`）")
 
-    bets = ledger.list_bets(limit=15)
+    summary = ledger.get_summary()
+    if summary["total_bets"] > 0:
+        print(
+            f"本地账本汇总: 共 {summary['total_bets']} 笔 | "
+            f"已命中 {summary['won']} | 未中 {summary['lost']} | "
+            f"在途 {summary['pending']} ({summary['pending_coins']} 币) | "
+            f"已落袋净利 {summary['realized_pnl']:+.1f} 币"
+        )
+
+    bets = ledger.list_bets(limit=args.limit)
     print(f"\n本地历史下注记录 (最近 {len(bets)} 笔):")
     if not bets:
         print("  暂无本地下注记录。")
     else:
         for b in bets:
             ts = time.strftime("%Y-%m-%d %H:%M", time.localtime(b["created_at"]))
+            st = b.get("status", "PENDING")
+            if st == "WON":
+                badge = f"WON {b.get('actual_gain', 0.0):+.1f}币"
+            elif st == "LOST":
+                badge = f"LOST {b.get('actual_gain', 0.0):+.1f}币"
+            else:
+                badge = "PENDING"
             print(
-                f"  [{ts}] [{b['source']}#{b['predict_id']}] {b['title']} -> "
-                f"选[{b['opt_desc']}] 投 {b['coins']} 币 (赔率:{b['effective_odds']:.2f}x, EV:{b['ev_ratio']*100:+.1f}%)"
+                f"  [{ts}] [{badge}] [{b['source']}#{b['predict_id']}] {b['title']} -> "
+                f"选[{b['opt_desc']}] 投 {b['coins']} 币 (下单赔率:{b['effective_odds']:.2f}x, EV:{b['ev_ratio']*100:+.1f}%)"
             )
 
 
@@ -110,7 +162,16 @@ def cmd_scan(args: argparse.Namespace) -> None:
 
     plaza_list = list(all_plaza_items.values())
     for p in plaza_list:
-        p["_pool_coins"] = parse_pool_coins(p.get("display_text", ""))
+        disp = p.get("display_text", "")
+        p["_pool_coins"] = parse_pool_coins(disp)
+        p["_hours_to_close"] = parse_hours_to_close(disp)
+
+    if args.max_hours > 0:
+        plaza_list = [
+            p
+            for p in plaza_list
+            if p.get("_hours_to_close") is not None and p["_hours_to_close"] <= args.max_hours
+        ]
 
     if args.with_odds:
         for p in plaza_list:
@@ -163,11 +224,13 @@ def cmd_scan(args: argparse.Namespace) -> None:
     for p in plaza_list:
         cat = p.get("_category", "全部")
         grp = f" [专题:{p['_group_title']}]" if p.get("_group_title") else ""
+        hrs = p.get("_hours_to_close")
+        hrs_tag = f" | 距封盘约 {hrs:.1f}h" if hrs is not None else ""
         print(f"\n[#{p['id']}] [{cat}]{grp} {p['title']}")
-        print(f"   状态/奖池: {p.get('display_text', '')}")
+        print(f"   状态/奖池: {p.get('display_text', '')}{hrs_tag}")
         for opt in p.get("options") or []:
             odds_str = (
-                f" | 实测10币赔率: {opt['effective_odds_10']:.2f}x (返{opt['predicted_10']}币)"
+                f" | 静态10币切片赔率: {opt['effective_odds_10']:.2f}x (返{opt['predicted_10']}币)"
                 if "effective_odds_10" in opt
                 else ""
             )
@@ -195,7 +258,6 @@ def cmd_calc(args: argparse.Namespace) -> None:
     if bankroll <= 0:
         bankroll = 500.0
 
-    # Parse --probs like "1:0.65,2:0.35"
     true_probs: Dict[int, float] = {}
     for pair in args.probs.split(","):
         pair = pair.strip()
@@ -203,11 +265,38 @@ def cmd_calc(args: argparse.Namespace) -> None:
             k, v = pair.split(":", 1)
             true_probs[int(k.strip())] = float(v.strip())
 
-    # Fetch option metadata from plaza list or construct from probs
-    options = [{"opt_idx": k, "opt_desc": f"选项{k}", "percent": 0.0} for k in sorted(true_probs.keys())]
-    if args.title:
-        title = args.title
-    else:
+    title = args.title or ""
+    pool_coins = args.pool_coins
+    hours_to_close: Optional[float] = args.hours_to_close if args.hours_to_close >= 0 else None
+    options: List[Dict[str, Any]] = []
+
+    # Automatically enrich metadata (title, options, pool_coins, close_time) from /predict/detail
+    try:
+        dres = client.get_plaza_detail(args.id)
+        if dres.get("code") == 0 and dres.get("data"):
+            ddata = dres["data"]
+            if not title and ddata.get("title"):
+                title = str(ddata["title"])
+            if pool_coins <= 0 and ddata.get("total_coin") is not None:
+                pool_coins = parse_pool_coins(str(ddata["total_coin"]))
+            if hours_to_close is None and ddata.get("close_time"):
+                hours_to_close = parse_hours_to_close(str(ddata["close_time"]))
+            if ddata.get("options"):
+                options = [
+                    {
+                        "opt_idx": int(o["opt_idx"]),
+                        "opt_desc": o.get("opt_desc", f"选项{o['opt_idx']}"),
+                        "percent": float(o.get("percent") or 0.0),
+                    }
+                    for o in ddata["options"]
+                    if int(o["opt_idx"]) in true_probs
+                ]
+    except Exception:
+        pass
+
+    if not options:
+        options = [{"opt_idx": k, "opt_desc": f"选项{k}", "percent": 0.0} for k in sorted(true_probs.keys())]
+    if not title:
         title = f"预测广场 #{args.id}"
 
     analyses = evaluate_prediction_options(
@@ -218,21 +307,33 @@ def cmd_calc(args: argparse.Namespace) -> None:
         bankroll=bankroll,
         kelly_fraction=args.kelly,
         max_single_bet=args.max_bet,
+        pool_coins=pool_coins,
+        hours_to_close=hours_to_close,
+        ignore_drift=args.ignore_drift,
+        snipe_window_hours=args.snipe_window,
     )
 
-    print("=" * 80)
-    print(f"【+EV & 分数凯利仓位精算】 {title} (ID: #{args.id})")
-    print(f"核算本金池: {bankroll:.1f} 硬币 | 凯利系数: {args.kelly:.2f} | 单笔上限: {args.max_bet} 硬币")
-    print("=" * 80)
+    pool_desc = f"{pool_coins:.0f} 币" if pool_coins > 0 else "未知"
+    hrs_desc = f"{hours_to_close:.1f}h" if hours_to_close is not None else "未知"
+
+    print("=" * 84)
+    print(f"【+EV & 浮动彩池漂移折现精算】 {title} (ID: #{args.id})")
+    print(
+        f"本金池: {bankroll:.1f} 币 | 凯利系数: {args.kelly:.2f} | 单笔上限: {args.max_bet} 币 | "
+        f"当前奖池: {pool_desc} | 距封盘: {hrs_desc} | 狙击窗: <={args.snipe_window:.0f}h"
+    )
+    print("=" * 84)
     for a in analyses:
         print(
-            f"选项 {a.opt_idx} [{a.opt_desc}]:\n"
-            f"  - AI客观胜率 p_true : {a.true_prob*100:.1f}%\n"
-            f"  - 10币实测有效赔率  : {a.effective_odds_10:.2f}x (隐含胜率: {(100.0/a.effective_odds_10 if a.effective_odds_10>0 else 0):.1f}%)\n"
-            f"  - 期望值 (EV)       : {a.ev_ratio*100:+.1f}% (胜率优势 Edge: {a.edge_pp:+.1f} pp)\n"
-            f"  - 评级              : 【{a.tier}】 {a.note}\n"
-            f"  - 凯利建议下注      : {a.recommended_coins} 枚硬币 "
-            f"(预计返还: {a.expected_return_coins:.1f} 币, 有效赔率: {a.effective_odds_at_rec:.2f}x, 期望净赚: {a.expected_net_profit:+.2f} 币)"
+            f"选项 {a.opt_idx} [{a.opt_desc}] (大众占比: {a.crowd_percent:.0f}%):\n"
+            f"  - AI客观胜率 p_true    : {a.true_prob*100:.1f}%\n"
+            f"  - 10币静态切片赔率     : {a.effective_odds_10:.2f}x (静态EV: {a.ev_ratio*100:+.1f}%)\n"
+            f"  - 终盘漂移折现赔率     : {a.terminal_odds_10:.2f}x (留存率: {a.drift_retention*100:.0f}%, "
+            f"保守EV: {a.conservative_ev_ratio*100:+.1f}%, Edge: {a.edge_pp:+.1f} pp)\n"
+            f"  - 评级                 : 【{a.tier}】 {a.note}\n"
+            f"  - 凯利建议当下下注     : {a.recommended_coins} 枚硬币 "
+            f"(保守预计返还: {a.expected_return_coins:.1f} 币, 折现赔率: {a.effective_odds_at_rec:.2f}x, "
+            f"保守期望净利: {a.expected_net_profit:+.2f} 币)"
         )
 
 
@@ -246,7 +347,7 @@ def cmd_bet(args: argparse.Namespace) -> None:
     if args.source == "plaza":
         est = client.calc_plaza_award(args.id, args.opt, args.coins)
         eff_odds = est / float(args.coins) if est > 0 and args.coins > 0 else 0.0
-        print(f"正在向【预测广场 #{args.id}】选项 {args.opt} 投入 {args.coins} 枚硬币 (预计命中返还 {est:.1f} 币, {eff_odds:.2f}x)...")
+        print(f"正在向【预测广场 #{args.id}】选项 {args.opt} 投入 {args.coins} 枚硬币 (当前切片预计返还 {est:.1f} 币, {eff_odds:.2f}x)...")
         res = client.place_plaza_bet(predict_id=args.id, opt_idx=args.opt, coins=args.coins)
         if res.get("code") == 0:
             print("下注成功！返回数据:", json.dumps(res.get("data", {}), ensure_ascii=False))
@@ -312,7 +413,9 @@ def main() -> None:
     p_login.add_argument("--cookie", type=str, default="", help="直接粘贴浏览器 Cookie 字符串")
     p_login.set_defaults(func=cmd_login)
 
-    p_status = sub.add_parser("status", help="查看当前账户余额、预测概览与本地下注账本")
+    p_status = sub.add_parser("status", help="查看当前账户余额、自动同步结算盈亏与本地账本")
+    p_status.add_argument("--no-sync", action="store_true", help="不自动请求 /predict/mine/records 同步开奖状态")
+    p_status.add_argument("--limit", type=int, default=15, help="展示最近 N 笔本地账本记录")
     p_status.set_defaults(func=cmd_status)
 
     p_scan = sub.add_parser("scan", help="扫描预测广场(游戏/体育/文娱/科技/二次元/生活)与传统赛事盘口")
@@ -323,18 +426,23 @@ def main() -> None:
         help="分类筛选 (by-tab 会逐个扫描全部分类并自动打上分类标签)",
     )
     p_scan.add_argument("--no-expand", action="store_true", help="不自动展开专题内的子盘口")
-    p_scan.add_argument("--with-odds", action="store_true", help="调用 /predict/calc 实测每个选项的10硬币真实赔率")
+    p_scan.add_argument("--max-hours", type=float, default=0.0, help="仅筛选距离封盘 <= N 小时的临盘狙击标的")
+    p_scan.add_argument("--with-odds", action="store_true", help="调用 /predict/calc 实测每个选项的10硬币静态切片赔率")
     p_scan.add_argument("--include-esports", action="store_true", help="同时扫描传统赛事中心 (/x/esports/guess)")
     p_scan.add_argument("--json", action="store_true", help="以 JSON 格式输出")
     p_scan.set_defaults(func=cmd_scan)
 
-    p_calc = sub.add_parser("calc", help="对指定盘口进行 +EV 与分数凯利最优硬币数精算")
+    p_calc = sub.add_parser("calc", help="对指定盘口进行终盘赔率漂移折现、狙击窗口判定与分数凯利精算")
     p_calc.add_argument("--id", type=int, required=True, help="预测广场题目 predict_id")
     p_calc.add_argument("--probs", type=str, required=True, help="AI评估的各选项真实概率, 格式如 '1:0.65,2:0.35'")
-    p_calc.add_argument("--title", type=str, default="", help="题目标题备注")
+    p_calc.add_argument("--title", type=str, default="", help="题目标题备注 (默认自动拉取)")
     p_calc.add_argument("--bankroll", type=float, default=0.0, help="用于凯利计算的硬币本金池 (默认自动读余额或500)")
     p_calc.add_argument("--kelly", type=float, default=0.25, help="凯利保守系数 (默认 0.25 即 1/4 凯利)")
     p_calc.add_argument("--max-bet", type=int, default=100, help="单笔最大硬币上限")
+    p_calc.add_argument("--pool-coins", type=float, default=0.0, help="手动指定当前奖池硬币数 (默认自动从 detail 拉取)")
+    p_calc.add_argument("--hours-to-close", type=float, default=-1.0, help="手动指定距封盘小时数 (默认自动从 detail 拉取)")
+    p_calc.add_argument("--snipe-window", type=float, default=24.0, help="允许出手的封盘倒计时窗口小时数 (默认 <=24h，超过则提示 SNIPE_LATER)")
+    p_calc.add_argument("--ignore-drift", action="store_true", help="忽略赔率漂移折现与封盘窗口拦截，强制按当前静态赔率计算")
     p_calc.set_defaults(func=cmd_calc)
 
     p_bet = sub.add_parser("bet", help="提交硬币下注并记录到本地 SQLite 账本")

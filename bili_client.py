@@ -82,7 +82,7 @@ class BiliClient:
         "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
     )
 
-    def __init__(self, cookie_path: Optional[Path] = None):
+    def __init__(self, cookie_path: Optional[Path] = None, use_doh_sni: bool = False):
         self.cookie_path = cookie_path or (Path(__file__).parent / "data" / "cookies.json")
         self.cookies: Dict[str, str] = {}
         self.load_cookies()
@@ -92,9 +92,10 @@ class BiliClient:
             self.cookies["b_nut"] = str(int(time.time()))
 
         ctx = ssl.create_default_context()
+        https_handler = SNIHTTPSHandler(context=ctx) if use_doh_sni else urllib.request.HTTPSHandler(context=ctx)
         self.opener = urllib.request.build_opener(
             urllib.request.ProxyHandler({}),
-            SNIHTTPSHandler(context=ctx),
+            https_handler,
         )
 
     def load_cookies(self) -> None:
@@ -132,7 +133,7 @@ class BiliClient:
         params: Optional[Dict[str, Any]] = None,
         data: Optional[Dict[str, Any]] = None,
         referer: Optional[str] = None,
-        retries: int = 3,
+        retries: int = 6,
     ) -> Dict[str, Any]:
         if params:
             qs = urllib.parse.urlencode({k: v for k, v in params.items() if v is not None})

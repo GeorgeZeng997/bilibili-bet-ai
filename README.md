@@ -42,15 +42,23 @@ In Bilibili's Prediction Plaza, final payouts depend on both **stake size** and 
 
 $$O_{\text{eff}}(c) = \frac{\text{PredictedPayout}(c)}{c}$$
 
-### 3. Parimutuel Fractional Kelly Optimizer (`quant.py`)
-Instead of plugging static odds into a textbook Kelly formula, `quant.py` evaluates discrete log-wealth utility across live payout quotes:
+### 3. Parimutuel Odds-Drift Discounting & Late-Sniping Guard (`quant.py`)
+Because Prediction Plaza is a **floating parimutuel pool**, the payout returned by `/predict/calc` is only a **static snapshot** assuming zero future bets before market close. Betting days in advance or into tiny pools exposes you to severe **Terminal Odds Drift (终盘赔率漂移)**:
+- **Shallow-Pool Smart-Money Dilution**: A niche `3,500`-coin pool showing `4.1x` on an obvious rule misreading can easily compress to `1.3x` once other rational bettors spot it before close.
+- **Distant-Market Retail Inflow**: Major tournament finals (`>24h–96h` before close) attract tens of millions of late retail coins on match day, shifting pool ratios dramatically.
 
-$$U(c) = p_{\text{true}} \ln\left(1 + \frac{c \cdot (O_{\text{eff}}(c) - 1)}{B / \alpha}\right) + (1 - p_{\text{true}}) \ln\left(1 - \frac{c}{B / \alpha}\right)$$
+`quant.py` automatically parses remaining `hours_to_close` and `pool_coins` to apply an excess-odds retention haircut $\rho \in [0.35, 1.0]$ before optimizing discrete Quarter-Kelly log-wealth utility:
 
-where $B$ is your active coin bankroll and $\alpha \in (0, 1]$ is the fractional Kelly multiplier (default $\alpha = 0.25$, Quarter-Kelly). Any option with $O_{\text{eff}}(c) \le 1.02$ is automatically flagged as a `TRAP` and blocked.
+$$O_{\text{term}}(c) = 1 + \rho(\text{Pool}, \Delta t_{\text{close}}) \cdot \left(O_{\text{eff}}(c) - 1\right)$$
 
-### 4. Clash / Mihomo TUN Fake-IP Immunity (`bili_client.py`)
-Users running proxy clients in TUN mode (`198.18.0.x` Fake-IP DNS hijacking) frequently encounter `SSLEOFError: UNEXPECTED_EOF_WHILE_READING` when hitting `api.bilibili.com`. `BiliClient` resolves Bilibili domains directly against AliDNS DoH (`223.5.5.5`) and performs custom SNI TLS handshakes over direct sockets—achieving 100% connection reliability without disabling your system proxy.
+$$U(c) = p_{\text{true}} \ln\left(1 + \frac{c \cdot (O_{\text{term}}(c) - 1)}{B / \alpha}\right) + (1 - p_{\text{true}}) \ln\left(1 - \frac{c}{B / \alpha}\right)$$
+
+- Markets with `hours_to_close > 24h` are automatically flagged as **`SNIPE_LATER`**, advising you to wait until the **`3–8h` Late-Sniping Window** (when pool maturity exceeds `90%`) unless overridden via `--ignore-drift`.
+- Any option with $O_{\text{eff}}(c) \le 1.00$ is flagged as a **`TRAP`** and blocked.
+
+### 4. Auto-Reconciling SQLite Ledger & Rate-Limit Resilience (`bili_client.py` & `ledger.py`)
+- **Resilient Direct HTTPS**: Uses proxy-bypassing direct TLS with exponential retry (`retries=6`) and optional AliDNS DoH + SNI resolution (`use_doh_sni=True`) for Clash/Mihomo TUN environments, plus automatic `-702` rate-limit backoff during batch betting.
+- **One-Command Settlement Sync**: Running `python -X utf8 cli.py status` automatically reconciles settled Plaza bets (`/predict/mine/records`) into `data/ledger.db`, tracking `WON` / `LOST` outcomes, official win-rate accuracy, and realized coin PnL.
 
 ### 5. Pure-Python Auto-Refreshing QR Login (`auth.py`)
 Includes a zero-Pillow pure-Python PNG encoder (`zlib` + `struct`) that generates `login_qr.png` and automatically refreshes it every 140 seconds (before Bilibili's 180s expiration window) until you scan and confirm on the Bilibili mobile app.
@@ -100,30 +108,30 @@ pip install -r requirements.txt
 # Scan all 8 categories in Prediction Plaza (auto-expanding topic groups) + Esports Match Center
 python -X utf8 cli.py scan --category by-tab --include-esports
 
-# Scan a specific category (game | sport | ent | tech | acg | life | other) with live 10-coin effective odds
-python -X utf8 cli.py scan --category tech --with-odds
+# Snipe markets closing within the next 24 hours with live 10-coin snapshot odds
+python -X utf8 cli.py scan --category by-tab --max-hours 24 --with-odds
 ```
 
-### 3. Run +EV & Fractional Kelly Position Sizing
+### 3. Run Drift-Adjusted +EV & Fractional Kelly Position Sizing
 
-Pass your (or your AI agent's) estimated true probabilities for each option (`opt_idx:probability`) to calculate live effective odds, expected value, and optimal coin stake:
+Pass your (or your AI agent's) estimated true probabilities (`opt_idx:probability`). `cli.py calc` automatically fetches current pool depth and hours-to-close, discounts static snapshot odds for terminal drift, and blocks premature entries (`SNIPE_LATER`) when `hours_to_close > 24h`:
 
 ```bash
-python -X utf8 cli.py calc --id 241 --probs "1:0.44,2:0.38,3:0.18" --title "Canyon vs Wei Most MVPs" --bankroll 500
+python -X utf8 cli.py calc --id 241 --probs "1:0.44,2:0.38,3:0.18" --bankroll 500
 ```
 
-Example output:
+Example output (inside the `<=24h` sniping window):
 ```text
-================================================================================
-【+EV & 分数凯利仓位精算】 Canyon vs Wei Most MVPs (ID: #241)
-核算本金池: 500.0 硬币 | 凯利系数: 0.25 | 单笔上限: 100 硬币
-================================================================================
-选项 1 [选项1]:
-  - AI客观胜率 p_true : 44.0%
-  - 10币实测有效赔率  : 3.85x (隐含胜率: 26.0%)
-  - 期望值 (EV)       : +69.4% (胜率优势 Edge: +18.0 pp)
-  - 评级              : 【STRONG】 强力正期望 (+EV 69.4%)，公众情绪偏差显著
-  - 凯利建议下注      : 50 枚硬币 (预计返还: 192.7 币, 有效赔率: 3.85x, 期望净赚: +34.79 币)
+====================================================================================
+【+EV & 浮动彩池漂移折现精算】 在四强对决中Canyon和Wei谁会拿到更多MVP？ (ID: #241)
+本金池: 500.0 币 | 凯利系数: 0.25 | 单笔上限: 100 币 | 当前奖池: 4718000 币 | 距封盘: 8.5h | 狙击窗: <=24h
+====================================================================================
+选项 1 [Canyon] (大众占比: 25%):
+  - AI客观胜率 p_true    : 44.0%
+  - 10币静态切片赔率     : 3.85x (静态EV: +69.4%)
+  - 终盘漂移折现赔率     : 3.65x (留存率: 93%, 保守EV: +60.6%, Edge: +16.6 pp)
+  - 评级                 : 【STRONG】 强力正期望 (折现后EV +60.6%，静态EV +69.4%)
+  - 凯利建议当下下注     : 46 枚硬币 (保守预计返还: 167.9 币, 折现赔率: 3.65x, 保守期望净利: +27.88 币)
 ```
 
 ### 4. Authenticate via Mobile QR Code (or Cookie String)
