@@ -1,4 +1,5 @@
 import json
+import os
 import socket
 import ssl
 import time
@@ -22,13 +23,11 @@ class DirectHTTPSConnection( urllib.request.HTTPSHandler ):
     def resolve_host(cls, host: str) -> str:
         if host in cls._dns_cache:
             return cls._dns_cache[host]
-        # Query AliDNS DoH JSON API over direct IP 223.5.5.5
+        # Query AliDNS DoH JSON API over direct IP 223.5.5.5 (validates IP SAN TLS cert)
         try:
             ctx = ssl.create_default_context()
-            ctx.check_hostname = False
-            ctx.verify_mode = ssl.CERT_NONE
             url = f"https://223.5.5.5/resolve?name={urllib.parse.quote(host)}&type=A"
-            req = urllib.request.Request(url, headers={"Host": "dns.alidns.com", "Accept": "application/json"})
+            req = urllib.request.Request(url, headers={"Accept": "application/json"})
             opener = urllib.request.build_opener(
                 urllib.request.ProxyHandler({}),
                 urllib.request.HTTPSHandler(context=ctx),
@@ -108,12 +107,24 @@ class BiliClient:
                 pass
 
     def save_cookies(self, new_cookies: Dict[str, str]) -> None:
-        self.cookies.update(new_cookies)
+        sanitized = {
+            str(k).replace("\r", "").replace("\n", "").strip(): str(v).replace("\r", "").replace("\n", "").strip()
+            for k, v in new_cookies.items()
+            if k and v is not None
+        }
+        self.cookies.update(sanitized)
         self.cookie_path.parent.mkdir(parents=True, exist_ok=True)
-        self.cookie_path.write_text(
+        tmp_path = self.cookie_path.with_suffix(f"{self.cookie_path.suffix}.tmp")
+        tmp_path.write_text(
             json.dumps(self.cookies, ensure_ascii=False, indent=2),
             encoding="utf-8",
         )
+        if os.name != "nt":
+            try:
+                os.chmod(tmp_path, 0o600)
+            except OSError:
+                pass
+        os.replace(tmp_path, self.cookie_path)
 
     @property
     def is_logged_in(self) -> bool:
@@ -124,7 +135,15 @@ class BiliClient:
         return self.cookies.get("bili_jct", "")
 
     def _cookie_header(self) -> str:
-        return "; ".join(f"{k}={v}" for k, v in self.cookies.items() if v)
+        parts = []
+        for k, v in self.cookies.items():
+            if not k or not v:
+                continue
+            ck = str(k).replace("\r", "").replace("\n", "").strip()
+            cv = str(v).replace("\r", "").replace("\n", "").strip()
+            if ck and cv:
+                parts.append(f"{ck}={cv}")
+        return "; ".join(parts)
 
     def request_json(
         self,
@@ -134,6 +153,7 @@ class BiliClient:
         data: Optional[Dict[str, Any]] = None,
         referer: Optional[str] = None,
         retries: int = 6,
+        timeout: float = 8.0,
     ) -> Dict[str, Any]:
         if params:
             qs = urllib.parse.urlencode({k: v for k, v in params.items() if v is not None})
@@ -154,17 +174,19 @@ class BiliClient:
             body_str = urllib.parse.urlencode(data or {})
             body_bytes = body_str.encode("utf-8")
 
+        max_attempts = max(1, int(retries))
         last_err = None
-        for attempt in range(retries):
+        for attempt in range(max_attempts):
             try:
                 req = urllib.request.Request(url, data=body_bytes, headers=headers, method=method.upper())
-                with self.opener.open(req, timeout=8) as resp:
+                with self.opener.open(req, timeout=timeout) as resp:
                     raw = resp.read().decode("utf-8", errors="replace")
                     return json.loads(raw)
             except Exception as e:
                 last_err = e
-                time.sleep(0.4 * (attempt + 1))
-        raise RuntimeError(f"Request failed after {retries} retries ({url}): {last_err}")
+                if attempt + 1 < max_attempts:
+                    time.sleep(0.4 * (attempt + 1))
+        raise RuntimeError(f"Request failed after {max_attempts} retries ({url}): {last_err}")
 
     # =========================================================================
     # Account & Auth APIs
@@ -184,7 +206,7 @@ class BiliClient:
         return 0.0
 
     # =========================================================================
-    # Channel 1: 预测广场 (Prediction Plaza - 游戏/体育/文娱/科技/二次元/生活)
+    # Channel 1: Prediction Plaza (Gaming/Sports/Entertainment/Tech/ACG/Life)
     # =========================================================================
     def get_plaza_tags(self) -> List[Dict[str, Any]]:
         res = self.request_json("https://api.bilibili.com/x/act-community/predict/tags")
@@ -342,6 +364,8 @@ class BiliClient:
                 "https://api.bilibili.com/x/act-community/predict/bet",
                 method="POST",
                 data=payload,
+                retries=1,
+                timeout=12.0,
             )
             if res.get("code") == -702 and attempt < 2:
                 time.sleep(3.5 * (attempt + 1))
@@ -359,7 +383,7 @@ class BiliClient:
         )
 
     # =========================================================================
-    # Channel 2: 赛事中心传统竞猜 (/x/esports/guess/*)
+    # Channel 2: Esports Match Center (/x/esports/guess/*)
     # =========================================================================
     def get_esports_questions(self, pn: int = 1, ps: int = 50) -> List[Dict[str, Any]]:
         res = self.request_json(
@@ -393,4 +417,6 @@ class BiliClient:
             method="POST",
             data=payload,
             referer=self.ESPORTS_REFERER,
+            retries=1,
+            timeout=12.0,
         )

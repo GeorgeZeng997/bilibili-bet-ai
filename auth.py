@@ -13,11 +13,16 @@ from bili_client import BiliClient
 
 def parse_cookie_string(raw: str) -> Dict[str, str]:
     cookies: Dict[str, str] = {}
-    for part in raw.split(";"):
+    cleaned = raw.replace("\r", "").replace("\n", "").strip()
+    if cleaned.lower().startswith("cookie:"):
+        cleaned = cleaned[7:].strip()
+    for part in cleaned.split(";"):
         part = part.strip()
         if "=" in part:
             k, v = part.split("=", 1)
-            cookies[k.strip()] = v.strip()
+            key = k.strip()
+            if key:
+                cookies[key] = v.strip()
     return cookies
 
 
@@ -63,7 +68,7 @@ def write_qr_png(url: str, out_path: Path, scale: int = 10, border: int = 4) -> 
 
 def interactive_qr_login(client: BiliClient, max_rounds: int = 15) -> bool:
     """
-    Generates `e:\\bilibili_bet\\login_qr.png` and automatically refreshes it every 140s
+    Generates `login_qr.png` in the project directory and automatically refreshes it every 140s
     before Bilibili's 180s expiry window so the QR code on disk is always valid.
     """
     png_path = Path(__file__).parent / "login_qr.png"
@@ -112,7 +117,7 @@ def interactive_qr_login(client: BiliClient, max_rounds: int = 15) -> bool:
                 continue
             elif status_code == 86090:
                 if not scanned_printed:
-                    print("已扫码，请在手机上点击【确认登录】...", flush=True)
+                    print("QR code scanned. Please tap [Confirm Login] on your phone...", flush=True)
                     scanned_printed = True
             elif status_code == 86038:
                 break
@@ -135,10 +140,10 @@ def interactive_qr_login(client: BiliClient, max_rounds: int = 15) -> bool:
 
                 client.save_cookies(extracted)
                 nav = client.get_nav_info()
-                uname = (nav.get("data") or {}).get("uname", "未知用户")
+                uname = (nav.get("data") or {}).get("uname", "Unknown")
                 coins = client.get_coin_balance()
-                print(f"\n登录成功！当前账号: {uname} | 硬币余额: {coins}", flush=True)
+                print(f"\nLogin successful! Account: {uname} | Coin balance: {coins}", flush=True)
                 return True
 
-    print("登录等待超时。", flush=True)
+    print("QR login timed out.", flush=True)
     return False

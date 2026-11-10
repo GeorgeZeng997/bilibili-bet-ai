@@ -5,6 +5,13 @@ import time
 from dataclasses import dataclass
 from typing import Dict, List, Optional, Tuple
 
+# Unicode escapes for Bilibili API Chinese pool/date labels so source stays pure ASCII
+_POOL_PREFIX_RE = re.compile(r"\u5956\u6c60[\uff1a:]\s*(\d+(?:\.\d+)?)\s*(\u4e07|\u4ebf)?")
+_POOL_RAW_RE = re.compile(r"^\s*(\d+(?:\.\d+)?)\s*(\u4e07|\u4ebf)?\s*$")
+_UNIT_WAN = "\u4e07"  # 10,000
+_UNIT_YI = "\u4ebf"   # 100,000,000
+_CN_DATE_RE = re.compile(r"(?:(\d{4})\u5e74)?(\d{1,2})\u6708(\d{1,2})\u65e5\s*(\d{1,2}):(\d{2})")
+
 
 @dataclass
 class OptionAnalysis:
@@ -28,39 +35,61 @@ class OptionAnalysis:
 
 def parse_pool_coins(display_text: str) -> float:
     """
-    Extracts pool size in coins from strings like:
-      - '硬币奖池：6139.5万　11月15日 00:00封盘'
-      - '8811.4万' or '3580'
+    Extracts pool size in coins from Bilibili display strings (including 10k / 100M suffixes
+    or plain numeric strings like '3580').
     """
     if not display_text:
         return 0.0
-    m = re.search(r"奖池[：:]\s*([0-9.]+)\s*(万|亿)?", str(display_text))
+    cleaned = str(display_text).replace(",", "")
+    m = _POOL_PREFIX_RE.search(cleaned)
     if not m:
-        m = re.match(r"^\s*([0-9.]+)\s*(万|亿)?\s*$", str(display_text))
+        m = _POOL_RAW_RE.match(cleaned)
     if not m:
         return 0.0
     val = float(m.group(1))
     unit = m.group(2)
-    if unit == "万":
+    if unit == _UNIT_WAN:
         val *= 10000.0
-    elif unit == "亿":
+    elif unit == _UNIT_YI:
         val *= 100000000.0
     return val
 
 
 def parse_hours_to_close(text: str, now_ts: Optional[float] = None) -> Optional[float]:
     """
-    Parses Bilibili close-time strings such as '硬币奖池：99.0万　11月15日 03:00封盘'
-    or '11月12日 00:00' into remaining hours until market close.
+    Parses Bilibili close-time strings (localized month/day strings, ISO '2026-11-15 00:00:00',
+    or Unix epoch seconds/milliseconds) into remaining hours until market close.
     """
     if not text:
         return None
-    m = re.search(r"(?:(\d{4})年)?(\d{1,2})月(\d{1,2})日\s*(\d{1,2}):(\d{2})", str(text))
-    if not m:
+    raw = str(text).strip()
+    if not raw:
         return None
 
     now_epoch = now_ts if now_ts is not None else time.time()
     now_dt = datetime.datetime.fromtimestamp(now_epoch)
+
+    if re.fullmatch(r"\d{9,13}", raw):
+        ts_val = float(raw)
+        if ts_val > 1e11:
+            ts_val /= 1000.0
+        delta_hours = (ts_val - now_epoch) / 3600.0
+        return max(0.0, round(delta_hours, 2))
+
+    m_iso = re.search(r"(\d{4})-(\d{1,2})-(\d{1,2})[T\s]+(\d{1,2}):(\d{2})(?::(\d{2}))?", raw)
+    if m_iso:
+        year, month, day, hour, minute = (int(m_iso.group(i)) for i in range(1, 6))
+        sec = int(m_iso.group(6) or 0)
+        try:
+            close_dt = datetime.datetime(year, month, day, hour, minute, sec)
+        except ValueError:
+            return None
+        delta_hours = (close_dt - now_dt).total_seconds() / 3600.0
+        return max(0.0, round(delta_hours, 2))
+
+    m = _CN_DATE_RE.search(raw)
+    if not m:
+        return None
 
     year_str, month_str, day_str, hour_str, minute_str = m.groups()
     month = int(month_str)
@@ -91,7 +120,7 @@ def compute_odds_drift_retention(
 ) -> Tuple[float, str]:
     """
     Estimates how much of the current excess parimutuel payout `(O_eff - 1)` is likely
-    to survive until market close (`终盘赔率漂移折现`), accounting for:
+    to survive until market close (terminal odds-drift discounting), accounting for:
       1) Shallow-pool dilution when rational bettors arbitrage cognitive mispricings
       2) Late retail inflow & sentiment shifts on distant markets (>24h before close)
     """
@@ -101,10 +130,10 @@ def compute_odds_drift_retention(
         pool_factor = 0.85
     elif pool_coins < 5000:
         pool_factor = 0.50
-        reasons.append(f"极浅池({pool_coins:.0f}币)易被套利资金严重摊薄")
+        reasons.append(f"very shallow pool ({pool_coins:.0f} coins) vulnerable to arbitrage dilution")
     elif pool_coins < 30000:
         pool_factor = 0.68
-        reasons.append(f"浅池({pool_coins:.0f}币)存在终盘稀释风险")
+        reasons.append(f"shallow pool ({pool_coins:.0f} coins) subject to terminal dilution")
     elif pool_coins < 200000:
         pool_factor = 0.84
     elif pool_coins < 1000000:
@@ -116,20 +145,20 @@ def compute_odds_drift_retention(
         time_factor = 0.85
     elif hours_to_close <= 6.0:
         time_factor = 0.98
-        reasons.append(f"临盘黄金狙击窗({hours_to_close:.1f}h)彩池已高度定型")
+        reasons.append(f"prime late-sniping window ({hours_to_close:.1f}h), pool mature")
     elif hours_to_close <= 12.0:
         time_factor = 0.93
     elif hours_to_close <= 24.0:
         time_factor = 0.85
     elif hours_to_close <= 72.0:
         time_factor = 0.72
-        reasons.append(f"距封盘尚有{hours_to_close:.1f}h，彩池未定型")
+        reasons.append(f"{hours_to_close:.1f}h until close, pool still maturing")
     else:
         time_factor = 0.58
-        reasons.append(f"远期盘口(距封盘{hours_to_close:.1f}h)，终盘赔率漂移极大")
+        reasons.append(f"distant market ({hours_to_close:.1f}h to close), high terminal odds drift")
 
     retention = round(max(0.35, min(1.0, pool_factor * time_factor)), 3)
-    return retention, "；".join(reasons)
+    return retention, "; ".join(reasons)
 
 
 def apply_drift_haircut(raw_odds: float, retention: float) -> float:
@@ -151,7 +180,20 @@ def fractional_kelly_fixed_odds(
     Standard Fractional Kelly for fixed or deep-pool odds:
       f* = alpha * (p * b - q) / b, where b = decimal_odds - 1
     """
-    if decimal_odds <= 1.02 or true_prob <= 0.0 or true_prob >= 1.0 or bankroll < 1.0:
+    if not all(
+        math.isfinite(x)
+        for x in (true_prob, decimal_odds, bankroll, kelly_fraction, max_bet_ratio)
+    ):
+        return 0
+    if (
+        decimal_odds <= 1.02
+        or true_prob <= 0.0
+        or true_prob > 1.0
+        or bankroll < 1.0
+        or kelly_fraction <= 0.0
+        or max_bet_ratio <= 0.0
+        or max_single_bet <= 0
+    ):
         return 0
     b = decimal_odds - 1.0
     q = 1.0 - true_prob
@@ -187,7 +229,16 @@ def optimize_plaza_bet_with_calc(
     pred_10 = calc_fn(predict_id, opt_idx, 10)
     raw_odds_10 = pred_10 / 10.0 if pred_10 > 0 else 0.0
     term_odds_10 = apply_drift_haircut(raw_odds_10, drift_retention)
-    if term_odds_10 <= 1.02:
+    if (
+        not all(math.isfinite(x) for x in (true_prob, bankroll, kelly_fraction, max_bet_ratio))
+        or true_prob <= 0.0
+        or true_prob > 1.0
+        or bankroll < 1.0
+        or kelly_fraction <= 0.0
+        or max_bet_ratio <= 0.0
+        or max_single_bet <= 0
+        or term_odds_10 <= 1.02
+    ):
         return 0, 0.0, term_odds_10
 
     ev_10 = true_prob * term_odds_10 - 1.0
@@ -263,7 +314,7 @@ def evaluate_prediction_options(
     `ignore_drift=True`.
     """
     if ignore_drift:
-        retention, drift_note = 1.0, "已关闭赔率漂移折现 (--ignore-drift)"
+        retention, drift_note = 1.0, "odds-drift discounting disabled (--ignore-drift)"
     else:
         retention, drift_note = compute_odds_drift_retention(pool_coins, hours_to_close)
 
@@ -304,29 +355,36 @@ def evaluate_prediction_options(
             )
 
         net_profit = rec_coins * (p_true * rec_odds - 1.0) if rec_coins > 0 else 0.0
-        suffix = f"（{drift_note}）" if drift_note else ""
+        suffix = f" ({drift_note})" if drift_note else ""
 
         if odds_10 <= 1.0:
             tier = "TRAP"
-            note = f"时间权重/高占比陷阱：投10币仅返{pred_10:.1f}币（真实赔率{odds_10:.2f}x < 1.0，猜中也亏本！）"
+            note = (
+                f"Time-weight / heavy-favorite trap: 10 coins return {pred_10:.1f} coins "
+                f"(effective odds {odds_10:.2f}x <= 1.00, loses coins even if correct)"
+            )
         elif is_too_early and raw_ev_10 >= 0.08:
             tier = "SNIPE_LATER"
             note = (
-                f"终盘狙击观望：静态EV {raw_ev_10*100:+.1f}% (折现后 {term_odds_10:.2f}x / 保守EV {cons_ev_10*100:+.1f}%)，"
-                f"距封盘尚有 {hours_to_close:.1f}h，建议等封盘前 3~8h 彩池定型后再狙击！"
+                f"Hold for late snipe: snapshot EV {raw_ev_10*100:+.1f}% "
+                f"(discounted {term_odds_10:.2f}x / conservative EV {cons_ev_10*100:+.1f}%), "
+                f"{hours_to_close:.1f}h to close — re-probe 3-8h before close"
             )
         elif cons_ev_10 >= 0.15 and edge_pp >= 8.0 and rec_coins > 0:
             tier = "STRONG"
-            note = f"强力正期望 (折现后EV {cons_ev_10*100:+.1f}%，静态EV {raw_ev_10*100:+.1f}%){suffix}"
+            note = f"Strong +EV (conservative EV {cons_ev_10*100:+.1f}%, snapshot EV {raw_ev_10*100:+.1f}%){suffix}"
         elif cons_ev_10 >= 0.08 and edge_pp >= 5.0 and rec_coins > 0:
             tier = "VALUE"
-            note = f"价值盘口 (折现后EV {cons_ev_10*100:+.1f}%，静态EV {raw_ev_10*100:+.1f}%){suffix}"
+            note = f"Value edge (conservative EV {cons_ev_10*100:+.1f}%, snapshot EV {raw_ev_10*100:+.1f}%){suffix}"
         elif cons_ev_10 > 0.0 or raw_ev_10 > 0.05:
             tier = "WATCH"
-            note = f"折现后安全边际不足 (折现EV {cons_ev_10*100:+.1f}%，静态EV {raw_ev_10*100:+.1f}%)，建议临盘前卡点复测{suffix}"
+            note = (
+                f"Insufficient margin after drift haircut (conservative EV {cons_ev_10*100:+.1f}%, "
+                f"snapshot EV {raw_ev_10*100:+.1f}%), re-check near close{suffix}"
+            )
         else:
             tier = "PASS"
-            note = f"负期望值 (保守EV {cons_ev_10*100:+.1f}%)，放弃"
+            note = f"Negative expected value (conservative EV {cons_ev_10*100:+.1f}%), pass"
 
         results.append(
             OptionAnalysis(
