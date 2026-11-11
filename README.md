@@ -1,6 +1,6 @@
 # BiliBet-AI 🎯
 
-> **An AI-Native Parimutuel +EV Scanner & Fractional Kelly Execution Engine for Bilibili Prediction Markets (`预测广场` & `赛事中心`)**
+> **An AI-Native Parimutuel +EV Scanner & Fractional Kelly Execution Engine for Bilibili Prediction Markets (`Prediction Plaza` & `Esports Match Center`)**
 
 [![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-blue.svg)](https://www.python.org/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
@@ -15,14 +15,14 @@ Unlike legacy tools that only support Bilibili's traditional esports match-winne
 
 ## ✨ Why Bilibili Prediction Markets Are a +EV Goldmine
 
-Bilibili's prediction markets do **not** use bookmaker-set fixed odds. Instead, they operate as **time-weighted parimutuel pools (彩池分红制)** funded entirely by retail users betting virtual Bilibili coins (`硬币`).
+Bilibili's prediction markets do **not** use bookmaker-set fixed odds. Instead, they operate as **time-weighted parimutuel pools** funded entirely by retail users betting virtual Bilibili coins.
 
 Because the participant base is heavily driven by **fandom loyalty, memes, wishful thinking, and cognitive biases**, crowd-implied probabilities frequently diverge wildly from objective real-world probabilities ($p_{\text{true}}$):
 
 | Market Category | Real-World Case Study | Crowd Vote Split | Live Effective Odds (`/predict/calc`) | Objective Probability ($p_{\text{true}}$) | Expected Value ($\text{EV}$) | Source of Mispricing |
 | :--- | :--- | :--- | :---: | :---: | :---: | :--- |
-| **Macro / Lifestyle** (`#197`) | *Will the Federal Reserve hike rates at the December FOMC meeting?* | Yes: `62%`<br>**No: `38%`** | **`2.62x`** (on *No*) | `~95%+` | **`+148%`** | **Cognitive Misreading**: Retail users confused a rate *hike* (`加息`) with a rate *cut* (`降息`) during an easing/pause cycle. |
-| **Sports / NBA** (`#142`) | *Will the Portland Trail Blazers (with rookie Yang Hansen) make the West Top 10?* | Yes: `88%`<br>**No: `12%`** | **`8.00x`** (on *No*) | `~80%+` | **`+532%`** | **Home-Player Fan Bias**: Massive patriotic fan voting on a rebuilding lottery team created an 8x payout on the heavy statistical favorite. |
+| **Macro / Lifestyle** (`#197`) | *Will the Federal Reserve hike rates at the December FOMC meeting?* | Yes: `62%`<br>**No: `38%`** | **`2.62x`** (on *No*) | `~95%+` | **`+148%`** | **Cognitive Misreading**: Retail users confused a rate *hike* with a rate *cut* during an easing/pause cycle. |
+| **Sports / NBA** (`#142`) | *Will the Portland Trail Blazers (with rookie Yang Hansen) make the West Top 10?* | Yes: `88%`<br>**No: `12%`** | **`8.00x`** (on *No*) | `~80%+` | **`+532%`** | **Home-Player Fan Bias**: Massive fan voting on a rebuilding lottery team created an 8x payout on the heavy statistical favorite. |
 | **Esports / S16** (`#241`) | *Who will earn more MVPs in the Semifinals: Canyon or Wei?* | **Canyon: `25%`**<br>Wei: `59%`<br>Tie: `16%` | **`3.85x`** (on *Canyon*) | `~44%` | **`+69%`** | **Regional Fandom Bias**: Domestic LPL fans piled into IG's jungler (Wei), underpricing GEN's jungler (Canyon) despite GEN being the match favorite. |
 | **Tournament Format** (`#219`) | *Will Beijing JDG reach the KPL Grand Finals?* | **Yes: `73%`**<br>No: `27%` | **`1.33x`** (on *Yes*) | `~81.5%` | **`+8.4%`** | **Double-Elimination Neglect**: Priced as a single match despite JDG being in the Winners' Bracket Final with two lives to qualify. |
 
@@ -34,7 +34,7 @@ Because the participant base is heavily driven by **fandom loyalty, memes, wishf
 Automatically crawls all 8 top-level categories in Prediction Plaza (`All`, `Gaming`, `Sports`, `Entertainment`, `Tech`, `ACG`, `Lifestyle`, `Other`) and recursively expands nested **Topic Groups (`scene=2`)** so hidden sub-markets (e.g., player props, map counts, award shows) are never missed.
 
 ### 2. Official Time-Weight & Self-Dilution Probing (`/predict/calc`)
-In Bilibili's Prediction Plaza, final payouts depend on both **stake size** and **entry time weight** (`投入硬币数量 × 预测时间权重`). Relying on raw vote percentages (`percent`) is dangerous:
+In Bilibili's Prediction Plaza, final payouts depend on both **stake size** and **entry time weight** (`staked_coins * entry_time_weight`). Relying on raw vote percentages (`percent`) is dangerous:
 - **Late-Entry Trap**: Betting on a heavy favorite (`>90%`) late in the cycle can yield an effective payout ratio $< 1.0\text{x}$ (you lose coins even if your prediction is correct!).
 - **Small-Pool Self-Dilution**: In niche Tech or Entertainment pools (`3,000–20,000` coins), betting 50 coins significantly dilutes your own payout odds compared to betting 10 coins.
 
@@ -43,7 +43,7 @@ In Bilibili's Prediction Plaza, final payouts depend on both **stake size** and 
 $$O_{\text{eff}}(c) = \frac{\text{PredictedPayout}(c)}{c}$$
 
 ### 3. Parimutuel Odds-Drift Discounting & Late-Sniping Guard (`quant.py`)
-Because Prediction Plaza is a **floating parimutuel pool**, the payout returned by `/predict/calc` is only a **static snapshot** assuming zero future bets before market close. Betting days in advance or into tiny pools exposes you to severe **Terminal Odds Drift (终盘赔率漂移)**:
+Because Prediction Plaza is a **floating parimutuel pool**, the payout returned by `/predict/calc` is only a **static snapshot** assuming zero future bets before market close. Betting days in advance or into tiny pools exposes you to severe **Terminal Odds Drift**:
 - **Shallow-Pool Smart-Money Dilution**: A niche `3,500`-coin pool showing `4.1x` on an obvious rule misreading can easily compress to `1.3x` once other rational bettors spot it before close.
 - **Distant-Market Retail Inflow**: Major tournament finals (`>24h–96h` before close) attract tens of millions of late retail coins on match day, shifting pool ratios dramatically.
 
@@ -56,9 +56,10 @@ $$U(c) = p_{\text{true}} \ln\left(1 + \frac{c \cdot (O_{\text{term}}(c) - 1)}{B 
 - Markets with `hours_to_close > 24h` are automatically flagged as **`SNIPE_LATER`**, advising you to wait until the **`3–8h` Late-Sniping Window** (when pool maturity exceeds `90%`) unless overridden via `--ignore-drift`.
 - Any option with $O_{\text{eff}}(c) \le 1.00$ is flagged as a **`TRAP`** and blocked.
 
-### 4. Auto-Reconciling SQLite Ledger & Rate-Limit Resilience (`bili_client.py` & `ledger.py`)
-- **Resilient Direct HTTPS**: Uses proxy-bypassing direct TLS with exponential retry (`retries=6`) and optional AliDNS DoH + SNI resolution (`use_doh_sni=True`) for Clash/Mihomo TUN environments, plus automatic `-702` rate-limit backoff during batch betting.
-- **One-Command Settlement Sync**: Running `python -X utf8 cli.py status` automatically reconciles settled Plaza bets (`/predict/mine/records`) into `data/ledger.db`, tracking `WON` / `LOST` outcomes, official win-rate accuracy, and realized coin PnL.
+### 4. Portfolio Risk Guardrails, Analytics & SQLite Ledger (`bili_client.py` & `ledger.py`)
+- **Resilient Direct HTTPS**: Uses proxy-bypassing direct TLS with exponential retry for read endpoints (`retries=6`), single-shot execution on non-idempotent bet mutations (`retries=1`), optional AliDNS DoH + SNI resolution (`use_doh_sni=True`) with verified TLS certificates, and automatic `-702` rate-limit backoff during batch betting.
+- **Portfolio Risk Guardrails & Dry-Run Simulation**: `cli.py bet` enforces configurable total-equity exposure caps (`--max-exposure-pct 0.35`), realized-drawdown circuit breakers (`--max-drawdown`), duplicate-position guards (`--no-duplicate`), and zero-mutation `--dry-run` simulation.
+- **Quantitative Portfolio Analytics & CSV/JSON Export**: `cli.py analytics` reconciles settled Plaza bets (`/predict/mine/records`) into `data/ledger.db` with proportional stake allocation, computing Win Rate, Settled ROI %, Profit Factor, Peak-to-Trough Max Drawdown, and Brier Probability Calibration Score, with one-flag export (`--export ledger.csv` or `--export ledger.json`).
 
 ### 5. Pure-Python Auto-Refreshing QR Login (`auth.py`)
 Includes a zero-Pillow pure-Python PNG encoder (`zlib` + `struct`) that generates `login_qr.png` and automatically refreshes it every 140 seconds (before Bilibili's 180s expiration window) until you scan and confirm on the Bilibili mobile app.
@@ -123,15 +124,15 @@ python -X utf8 cli.py calc --id 241 --probs "1:0.44,2:0.38,3:0.18" --bankroll 50
 Example output (inside the `<=24h` sniping window):
 ```text
 ====================================================================================
-【+EV & 浮动彩池漂移折现精算】 在四强对决中Canyon和Wei谁会拿到更多MVP？ (ID: #241)
-本金池: 500.0 币 | 凯利系数: 0.25 | 单笔上限: 100 币 | 当前奖池: 4718000 币 | 距封盘: 8.5h | 狙击窗: <=24h
+[+EV & Parimutuel Drift Analysis] Semifinals MVP Count: Canyon vs Wei (ID: #241)
+Bankroll: 500.0 | Kelly Fraction: 0.25 | Max Bet: 100 | Pool: 4718000 coins | Closes In: 8.5h | Snipe Window: <=24h
 ====================================================================================
-选项 1 [Canyon] (大众占比: 25%):
-  - AI客观胜率 p_true    : 44.0%
-  - 10币静态切片赔率     : 3.85x (静态EV: +69.4%)
-  - 终盘漂移折现赔率     : 3.65x (留存率: 93%, 保守EV: +60.6%, Edge: +16.6 pp)
-  - 评级                 : 【STRONG】 强力正期望 (折现后EV +60.6%，静态EV +69.4%)
-  - 凯利建议当下下注     : 46 枚硬币 (保守预计返还: 167.9 币, 折现赔率: 3.65x, 保守期望净利: +27.88 币)
+Option 1 [Canyon] (Crowd share: 25%):
+  - Objective Win Prob (p_true) : 44.0%
+  - 10-Coin Snapshot Odds       : 3.85x (Snapshot EV: +69.4%)
+  - Drift-Discounted Odds       : 3.65x (Retention: 93%, Conservative EV: +60.6%, Edge: +16.6 pp)
+  - Tier                        : [STRONG] Strong +EV (conservative EV +60.6%, snapshot EV +69.4%)
+  - Recommended Kelly Stake     : 46 coins (Est. Return: 167.9 coins, Eff. Odds: 3.65x, Expected Net Profit: +27.88 coins)
 ```
 
 ### 4. Authenticate via Mobile QR Code (or Cookie String)
@@ -144,11 +145,14 @@ python -X utf8 cli.py login
 python -X utf8 cli.py login --cookie "SESSDATA=xxx; bili_jct=yyy; DedeUserID=zzz"
 ```
 
-### 5. Place Bets & Track Portfolio Status
+### 5. Place Bets (or Dry-Run) & Audit Portfolio Analytics
 
 ```bash
-# Place a bet on Prediction Plaza (#197, Option 2, 20 coins) and log to SQLite ledger
-python -X utf8 cli.py bet --source plaza --id 197 --opt 2 --coins 20 \
+# Dry-run simulate a bet (probes live payout, EV, and portfolio exposure caps without spending coins)
+python -X utf8 cli.py bet --source plaza --id 197 --opt 2 --coins 20 --prob 0.95 --bankroll 500 --dry-run
+
+# Place a live bet on Prediction Plaza with duplicate & drawdown guardrails
+python -X utf8 cli.py bet --source plaza --id 197 --opt 2 --coins 20 --no-duplicate --max-exposure-pct 0.35 \
   --title "Fed Dec Rate Hike?" --opt-desc "No" --prob 0.95 --reason "Crowd confused hike with cut"
 
 # Place a bet on Esports Match Center (Note: Bilibili caps traditional esports bets at 10 coins per match)
@@ -156,6 +160,15 @@ python -X utf8 cli.py bet --source esports --id 37754 --qid 11858 --detail-id 24
 
 # Check current coin balance, official 6-month overview, and local SQLite ledger history
 python -X utf8 cli.py status
+
+# Compute quantitative portfolio analytics (ROI %, Profit Factor, Max Drawdown, Brier Score) & export CSV
+python -X utf8 cli.py analytics --export data/ledger_export.csv
+```
+
+### 6. Run Unit Tests
+
+```bash
+python -m unittest discover -s tests -v
 ```
 
 ---
@@ -177,6 +190,7 @@ bilibili-bet-ai/
 ├── quant.py           # Parimutuel Fractional Kelly optimizer & /predict/calc dilution prober
 ├── ledger.py          # SQLite local bet & EV tracking ledger (data/ledger.db)
 ├── cli.py             # Unified command-line interface (scan, calc, login, bet, status)
+├── tests/             # Unit test suite for quant modeling, cookie handling & SQLite ledger
 ├── SKILL.md           # Agentic workflow instructions for AI coding assistants
 ├── requirements.txt   # Minimal Python dependencies
 └── LICENSE            # MIT License
@@ -187,5 +201,5 @@ bilibili-bet-ai/
 ## 🔒 Security & Disclaimer
 
 1. **Credential Privacy**: Your session cookies (`data/cookies.json`) and local betting history (`data/ledger.db`) are strictly git-ignored via [`.gitignore`](.gitignore). **Never commit or share your `SESSDATA` or `bili_jct` tokens.**
-2. **Educational & Research Purpose**: Bilibili coins (`硬币`) are non-redeemable virtual community points used to support content creators and participate in official platform events. This project is provided strictly for educational research into **parimutuel market microstructure, crowd sentiment bias, and Kelly criterion portfolio optimization**.
+2. **Educational & Research Purpose**: Bilibili coins are non-redeemable virtual community points used to support content creators and participate in official platform events. This project is provided strictly for educational research into **parimutuel market microstructure, crowd sentiment bias, and Kelly criterion portfolio optimization**.
 3. **API Etiquette**: Built-in backoff and sequential request pacing are enforced by default. Do not modify this tool for high-frequency scraping or automated spamming.

@@ -14,7 +14,7 @@ When the user asks you to scan Bilibili prediction markets, audit settled profit
 
 ## Step 2: Filter & Verify Candidate Markets
 1. **Parimutuel Late-Sniping Rule (`<= 24h`, ideal `3–8h` before close)**:
-   - Bilibili Prediction Plaza uses **floating parimutuel pools (总彩池浮动分红制)**—`/predict/calc` only reflects the *current* snapshot, NOT final settlement odds!
+   - Bilibili Prediction Plaza uses **floating parimutuel pools**—`/predict/calc` only reflects the *current* snapshot, NOT final settlement odds!
    - For markets closing **`> 24h` away**, retail inflow or smart-money arbitrage can severely dilute early odds. Monitor them and wait until **`3–8h` before close** (when pool maturity exceeds 90%) before committing heavy stakes.
    - For shallow niche pools (`< 30,000` coins), expect other rational bettors to pile into obvious cognitive mispricings before close; always rely on `cli.py calc`'s drift-discounted terminal odds (`terminal_odds_10`) rather than raw snapshot odds.
 2. **Inspect Settlement Rules**: Query `BiliClient().get_plaza_detail(predict_id)` to verify `settle_reason` (official settlement criteria) and `settle_text` (exact settlement trigger).
@@ -30,9 +30,14 @@ When the user asks you to scan Bilibili prediction markets, audit settled profit
    - Hold off on `SNIPE_LATER` (`hours_to_close > 24h`), advising the user to re-probe within `3–8h` before market close unless they explicitly request an early position (`--ignore-drift`).
 3. Present a clear summary table showing: Market ID, Title, Hours to Close, Pool Size, Recommended Option, Static Snapshot Odds vs. Drift-Discounted Terminal Odds, Estimated $p_{\text{true}}$, Conservative $+EV\%$, and Recommended Coin Stake.
 
-## Step 4: Execute Approved Bets
-Once the user approves the portfolio, execute each bet sequentially via:
-```bash
-python -X utf8 cli.py bet --source plaza --id <id> --opt <opt_idx> --coins <n> --title "<title>" --opt-desc "<opt>" --prob <p_true> --reason "<rationale>"
-```
-(`BiliClient.place_plaza_bet` automatically handles `-702` rate-limit backoff, and `cli.py bet --source esports` enforces Bilibili's 10-coin per-question cap locally.)
+## Step 4: Dry-Run Preview, Execute Approved Bets & Review Analytics
+1. Preview exposure and live odds safely before committing coins using `--dry-run`:
+   ```bash
+   python -X utf8 cli.py bet --source plaza --id <id> --opt <opt_idx> --coins <n> --prob <p_true> --dry-run
+   ```
+2. Once the user approves the portfolio, execute each bet sequentially with risk guardrails enabled:
+   ```bash
+   python -X utf8 cli.py bet --source plaza --id <id> --opt <opt_idx> --coins <n> --no-duplicate --max-exposure-pct 0.35 --title "<title>" --opt-desc "<opt>" --prob <p_true> --reason "<rationale>"
+   ```
+   (`BiliClient.place_plaza_bet` automatically handles `-702` rate-limit backoff, and `cli.py bet --source esports` enforces Bilibili's 10-coin per-question cap locally.)
+3. Audit quantitative performance (ROI %, Profit Factor, Max Drawdown, Brier calibration score) or export records at any time via `python -X utf8 cli.py analytics --export data/ledger.csv`.

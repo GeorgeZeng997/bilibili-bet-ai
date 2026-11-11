@@ -1,4 +1,4 @@
-# 账号敏感凭证与本地数据库（严禁提交到Git！）
+# Sensitive account credentials and local database (never commit to Git)
 data/
 *.db
 *.sqlite
@@ -6,14 +6,14 @@ data/
 cookies.json
 data_qr.json
 
-# 临时登录二维码文件
+# Temporary login QR code files
 login_qr.png
 login_qr.html
 
-# 个人临时批量执行脚本
+# Local ad-hoc batch execution scripts
 execute_batch.py
 
-# Python 缓存与虚拟环境
+# Python bytecode cache and virtual environments
 __pycache__/
 *.py[cod]
 *$py.class
@@ -22,7 +22,7 @@ venv/
 env/
 .env
 
-# IDE 配置
+# IDE & OS metadata
 .vscode/
 .idea/
 .DS_Store
